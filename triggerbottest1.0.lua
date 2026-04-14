@@ -1,782 +1,1222 @@
-local v0 = tonumber
-local v1 = string.byte
-local v2 = string.char
-local v3 = string.sub
-local v4 = string.gsub
-local v5 = string.rep
-local v6 = table.concat
-local v7 = table.insert
-local v8 = math.ldexp
-local v9 = getfenv or function() 
-    return _ENV 
-end
-local v10 = setmetatable
-local v11 = pcall
-local v12 = select
-local v13 = unpack or table.unpack
-local v14 = tonumber
 
-local function v15(v16, v17, ...)
-    local v18 = 1
-    local v19
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+local Config = {
+    ESP_Enabled = true,
+    ESP_Box = true,
+    ESP_BoxStyle = 1,
+    ESP_Name = true,
+    ESP_Distance = true,
+    ESP_Tracer = false,
+    ESP_TracerOrigin = 1,
+    ESP_TeamCheck = true,
+    ESP_MaxDistance = 500,
     
-    v16 = v4(v3(v16, 5), "..", function(v30)
-        if (v1(v30, 2) == 81) then
-            local v85 = 0
-            while true do
-                if (v85 == 0) then
-                    v19 = v0(v3(v30, 1, 1))
-                    return ""
+    AIM_Enabled = false,
+    AIM_FOV = 180,
+    AIM_Smooth = 0.18,
+    AIM_ShowFOV = true,
+    AIM_TargetPart = 1,
+    AIM_TeamCheck = true,
+    
+    TRIGGER_Enabled = false,
+    TRIGGER_Delay = 45,
+    TRIGGER_HitChance = 100,
+    TRIGGER_Head = true,
+    TRIGGER_Chest = true,
+    TRIGGER_Arms = false,
+    TRIGGER_Legs = false,
+    
+    MENU_Open = true,
+    MENU_Tab = 1
+}
+
+local Tuning = {
+    CacheInterval = 0.2,
+    TeamScanInterval = 0.5,
+    
+    BoxRatio = 0.55,
+    CornerLength = 10,
+    MinBoxSize = 20,
+    MaxBoxSize = 400,
+    NameOffset = 18,
+    DistOffset = 6
+}
+
+local Palette = {
+    Enemy = Color3.fromRGB(255, 75, 85),
+    Friendly = Color3.fromRGB(80, 180, 255),
+    Checking = Color3.fromRGB(150, 150, 150),
+    
+    MenuBg = Color3.fromRGB(12, 14, 18),
+    MenuPanel = Color3.fromRGB(18, 22, 28),
+    MenuBorder = Color3.fromRGB(35, 40, 50),
+    MenuAccent = Color3.fromRGB(255, 65, 75),
+    MenuText = Color3.fromRGB(220, 225, 230),
+    MenuTextDim = Color3.fromRGB(100, 110, 125),
+    MenuOn = Color3.fromRGB(255, 65, 75),
+    MenuOff = Color3.fromRGB(40, 45, 55),
+    MenuHeader = Color3.fromRGB(255, 65, 75),
+    GraphBg = Color3.fromRGB(8, 10, 14),
+    GraphLine = Color3.fromRGB(255, 65, 75),
+    GraphGrid = Color3.fromRGB(25, 30, 38),
+    
+    Tracer = Color3.fromRGB(255, 140, 100),
+    FOV_Circle = Color3.fromRGB(255, 65, 75),
+    FOV_Active = Color3.fromRGB(85, 220, 120)
+}
+
+local Timers = {
+    lastCache = 0,
+    lastTeamScan = 0,
+    lastTrigger = 0
+}
+
+local Cache = {
+    Soldiers = {},
+    Friendlies = {},
+    FriendlyScores = {},
+    ConfirmedEnemies = {},
+    EnemyConfirmations = {},
+    FriendlyIndicators = {},
+    myRoot = nil,
+    myPos = Vector3.zero
+}
+
+local CharacterFolder = nil
+local Connections = {}
+local Unloaded = false
+
+local UI = {}
+UI.ScreenGui = Instance.new("ScreenGui")
+UI.ScreenGui.Name = "DeadlineXeno"
+UI.ScreenGui.ResetOnSpawn = false
+UI.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+UI.ScreenGui.DisplayOrder = 999
+UI.ScreenGui.IgnoreGuiInset = true
+
+pcall(function() UI.ScreenGui.Parent = game:GetService("CoreGui") end)
+if not UI.ScreenGui.Parent then
+    UI.ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local function IsValidModel(model)
+    if not model or not model.Parent then return false end
+    local root = model:FindFirstChild("humanoid_root_part")
+    return root ~= nil and root.Parent ~= nil
+end
+
+local function GetRoot(model)
+    return model:FindFirstChild("humanoid_root_part")
+end
+
+local function GetHead(model)
+    return model:FindFirstChild("head")
+end
+
+local function GetTorso(model)
+    return model:FindFirstChild("torso")
+end
+
+local function IsLocalPlayer(model)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    if model == char then return true end
+    local myRoot = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("humanoid_root_part")
+    local modelRoot = GetRoot(model)
+    if myRoot and modelRoot then
+        return (myRoot.Position - modelRoot.Position).Magnitude < 1
+    end
+    return false
+end
+
+local function ScanFriendlyIndicators()
+    Cache.FriendlyIndicators = {}
+    if not Config.ESP_TeamCheck then return end
+    
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    
+    local count = 0
+    for _, gui in ipairs(playerGui:GetDescendants()) do
+        if count >= 50 then break end
+        if not gui:IsA("GuiObject") or not gui.Visible then continue end
+        
+        local size = gui.AbsoluteSize
+        if size.X <= 0 or size.Y <= 0 or size.X >= 20 or size.Y >= 20 then continue end
+        
+        local isIndicator = false
+        if gui:IsA("Frame") and gui.BackgroundTransparency < 0.9 then
+            local col = gui.BackgroundColor3
+            if col.G > 0.5 or col.B > 0.5 then isIndicator = true end
+        elseif gui:IsA("ImageLabel") and gui.ImageTransparency < 0.5 and gui.Image ~= "" then
+            isIndicator = true
+        end
+        
+        if isIndicator then
+            local pos = gui.AbsolutePosition
+            Cache.FriendlyIndicators[count + 1] = Vector2.new(pos.X + size.X/2, pos.Y + size.Y/2)
+            count = count + 1
+        end
+    end
+end
+
+local function UpdateFriendlyStatus()
+    if not Config.ESP_TeamCheck then return end
+    
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    
+    for model in pairs(Cache.Soldiers) do
+        if not IsValidModel(model) then
+            Cache.Friendlies[model] = nil
+            Cache.FriendlyScores[model] = nil
+            Cache.ConfirmedEnemies[model] = nil
+            continue
+        end
+        
+        if Cache.ConfirmedEnemies[model] then continue end
+        
+        local root = GetRoot(model)
+        if not root then continue end
+        
+        local screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
+        if not onScreen or screenPos.Z <= 0 then
+            local confirms = Cache.EnemyConfirmations[model] or 0
+            if confirms > 0 then
+                Cache.EnemyConfirmations[model] = confirms + 1
+                if Cache.EnemyConfirmations[model] >= 2 then
+                    Cache.ConfirmedEnemies[model] = true
+                    Cache.Friendlies[model] = nil
                 end
             end
+            continue
+        end
+        
+        local screenPos2D = Vector2.new(screenPos.X, screenPos.Y)
+        local foundIndicator = false
+        
+        for i = 1, #Cache.FriendlyIndicators do
+            if (Cache.FriendlyIndicators[i] - screenPos2D).Magnitude < 120 then
+                foundIndicator = true
+                break
+            end
+        end
+        
+        local score = Cache.FriendlyScores[model] or 0
+        local confirms = Cache.EnemyConfirmations[model] or 0
+        
+        if foundIndicator then
+            score = math.min(score + 2, 8)
+            confirms = math.max(confirms - 2, 0)
         else
-            local v86 = 0
-            local v87
-            while true do
-                if (v86 == 0) then
-                    v87 = v2(v0(v30, 16))
-                    if v19 then
-                        local v123 = 0
-                        local v124
-                        while true do
-                            if (v123 == 1) then
-                                return v124
-                            end
-                            if (v123 == 0) then
-                                v124 = v5(v87, v19)
-                                v19 = nil
-                                v123 = 1
-                            end
-                        end
-                    else
-                        return v87
+            score = math.max(score - 1, 0)
+            confirms = confirms + 2
+        end
+        
+        Cache.FriendlyScores[model] = score
+        Cache.EnemyConfirmations[model] = confirms
+        
+        if score >= 3 then
+            Cache.Friendlies[model] = true
+            Cache.ConfirmedEnemies[model] = nil
+        elseif confirms >= 2 then
+            Cache.Friendlies[model] = nil
+            Cache.ConfirmedEnemies[model] = true
+        elseif score <= 0 then
+            Cache.Friendlies[model] = nil
+        end
+    end
+end
+
+local function IsFriendly(model)
+    if not Config.ESP_TeamCheck then return false end
+    if Cache.ConfirmedEnemies[model] then return false end
+    return Cache.Friendlies[model] == true
+end
+
+local function IsChecking(model)
+    if not Config.ESP_TeamCheck then return false end
+    if Cache.ConfirmedEnemies[model] then return false end
+    if Cache.Friendlies[model] then return false end
+    return true
+end
+
+local function GetPlayerColor(model)
+    if not Config.ESP_TeamCheck then return Palette.Enemy end
+    if Cache.ConfirmedEnemies[model] then return Palette.Enemy end
+    if Cache.Friendlies[model] then return Palette.Friendly end
+    return Palette.Checking
+end
+
+local function GetPlayerStatus(model)
+    if not Config.ESP_TeamCheck then return "ENEMY" end
+    if Cache.ConfirmedEnemies[model] then return "ENEMY" end
+    if Cache.Friendlies[model] then return "FRIENDLY" end
+    return "CHECKING"
+end
+
+local function CacheSoldiers()
+    if not CharacterFolder then return end
+    
+    local myChar = LocalPlayer.Character
+    Cache.myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("humanoid_root_part"))
+    if Cache.myRoot then
+        Cache.myPos = Cache.myRoot.Position
+    else
+        local cam = Workspace.CurrentCamera
+        Cache.myPos = cam and cam.CFrame.Position or Vector3.zero
+    end
+    local myPos = Cache.myPos
+    
+    local validModels = {}
+    for _, model in ipairs(CharacterFolder:GetChildren()) do
+        if not model:IsA("Model") then continue end
+        if not IsValidModel(model) then continue end
+        if IsLocalPlayer(model) then continue end
+        
+        local root = GetRoot(model)
+        if root and (root.Position - myPos).Magnitude <= Config.ESP_MaxDistance then
+            validModels[model] = true
+            if not Cache.Soldiers[model] then
+                Cache.Soldiers[model] = true
+            end
+        end
+    end
+    
+    for model in pairs(Cache.Soldiers) do
+        if not validModels[model] then
+            Cache.Soldiers[model] = nil
+            Cache.Friendlies[model] = nil
+            Cache.FriendlyScores[model] = nil
+            Cache.ConfirmedEnemies[model] = nil
+            Cache.EnemyConfirmations[model] = nil
+        end
+    end
+end
+
+local ESP = { cache = {} }
+
+local function DrawLine(frame, x1, y1, x2, y2, color, thickness)
+    thickness = thickness or 1
+    local dx, dy = x2 - x1, y2 - y1
+    local length = math.sqrt(dx * dx + dy * dy)
+    if length < 1 then frame.Visible = false; return end
+    local cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    local angle = math.deg(math.atan2(dy, dx))
+    frame.Position = UDim2.new(0, cx, 0, cy)
+    frame.Size = UDim2.new(0, length, 0, thickness)
+    frame.Rotation = angle
+    frame.BackgroundColor3 = color
+    frame.Visible = true
+end
+
+function ESP.Create(model)
+    if ESP.cache[model] then return end
+    
+    local boxLines = {}
+    for i = 1, 4 do
+        local line = Instance.new("Frame")
+        line.BackgroundColor3 = Palette.Enemy
+        line.BorderSizePixel = 0
+        line.Visible = false
+        line.Parent = UI.ScreenGui
+        boxLines[i] = line
+    end
+    
+    local corners = {}
+    for i = 1, 8 do
+        local c = Instance.new("Frame")
+        c.BackgroundColor3 = Palette.Enemy
+        c.BorderSizePixel = 0
+        c.Visible = false
+        c.Parent = UI.ScreenGui
+        corners[i] = c
+    end
+    
+    local name = Instance.new("TextLabel")
+    name.BackgroundTransparency = 1
+    name.Font = Enum.Font.RobotoMono
+    name.TextSize = 13
+    name.TextStrokeTransparency = 0
+    name.Size = UDim2.new(0, 150, 0, 16)
+    name.TextXAlignment = Enum.TextXAlignment.Center
+    name.Visible = false
+    name.Parent = UI.ScreenGui
+    
+    local dist = Instance.new("TextLabel")
+    dist.BackgroundTransparency = 1
+    dist.Font = Enum.Font.RobotoMono
+    dist.TextSize = 11
+    dist.TextColor3 = Palette.MenuTextDim
+    dist.TextStrokeTransparency = 0
+    dist.Size = UDim2.new(0, 100, 0, 14)
+    dist.TextXAlignment = Enum.TextXAlignment.Center
+    dist.Visible = false
+    dist.Parent = UI.ScreenGui
+    
+    local tracer = Instance.new("Frame")
+    tracer.BackgroundColor3 = Palette.Tracer
+    tracer.BorderSizePixel = 0
+    tracer.AnchorPoint = Vector2.new(0.5, 0.5)
+    tracer.Visible = false
+    tracer.Parent = UI.ScreenGui
+    
+    ESP.cache[model] = {
+        BoxLines = boxLines, Corners = corners,
+        Name = name, Dist = dist, Tracer = tracer
+    }
+end
+
+function ESP.Hide(esp)
+    if not esp then return end
+    for _, line in ipairs(esp.BoxLines) do line.Visible = false end
+    for _, c in ipairs(esp.Corners) do c.Visible = false end
+    esp.Name.Visible = false
+    esp.Dist.Visible = false
+    esp.Tracer.Visible = false
+end
+
+function ESP.Destroy(esp)
+    if not esp then return end
+    for _, line in ipairs(esp.BoxLines) do pcall(function() line:Destroy() end) end
+    for _, c in ipairs(esp.Corners) do pcall(function() c:Destroy() end) end
+    pcall(function() esp.Name:Destroy() end)
+    pcall(function() esp.Dist:Destroy() end)
+    pcall(function() esp.Tracer:Destroy() end)
+end
+
+function ESP.HideAll()
+    for _, esp in pairs(ESP.cache) do ESP.Hide(esp) end
+end
+
+function ESP.Cleanup()
+    local toRemove = {}
+    for model, esp in pairs(ESP.cache) do
+        if not Cache.Soldiers[model] then
+            ESP.Hide(esp)
+            ESP.Destroy(esp)
+            toRemove[#toRemove + 1] = model
+        end
+    end
+    for _, model in ipairs(toRemove) do ESP.cache[model] = nil end
+end
+
+function ESP.Render(esp, model, cam, screenSize, screenCenter)
+    local root = GetRoot(model)
+    if not root then ESP.Hide(esp); return end
+    
+    local myPos = Cache.myPos
+    local dist = (root.Position - myPos).Magnitude
+    if dist > Config.ESP_MaxDistance then ESP.Hide(esp); return end
+    
+    local screenPos, onScreen = cam:WorldToViewportPoint(root.Position)
+    if not onScreen or screenPos.Z <= 0 then ESP.Hide(esp); return end
+    
+    local baseH = 1200 / math.max(screenPos.Z, 1)
+    local boxH = math.clamp(baseH, Tuning.MinBoxSize, Tuning.MaxBoxSize)
+    local boxW = boxH * Tuning.BoxRatio
+    
+    local cx, cy = screenPos.X, screenPos.Y
+    local halfW, halfH = boxW / 2, boxH / 2
+    local top = cy - halfH * 1.1
+    local bottom = cy + halfH * 0.9
+    local left = cx - halfW
+    local right = cx + halfW
+    
+    local color = GetPlayerColor(model)
+    
+    if Config.ESP_Box then
+        if Config.ESP_BoxStyle == 1 then
+            for _, c in ipairs(esp.Corners) do c.Visible = false end
+            esp.BoxLines[1].Position = UDim2.new(0, left, 0, top)
+            esp.BoxLines[1].Size = UDim2.new(0, boxW, 0, 1)
+            esp.BoxLines[2].Position = UDim2.new(0, left, 0, bottom)
+            esp.BoxLines[2].Size = UDim2.new(0, boxW, 0, 1)
+            esp.BoxLines[3].Position = UDim2.new(0, left, 0, top)
+            esp.BoxLines[3].Size = UDim2.new(0, 1, 0, bottom - top)
+            esp.BoxLines[4].Position = UDim2.new(0, right, 0, top)
+            esp.BoxLines[4].Size = UDim2.new(0, 1, 0, bottom - top)
+            for _, line in ipairs(esp.BoxLines) do line.BackgroundColor3 = color; line.Visible = true end
+        else
+            for _, line in ipairs(esp.BoxLines) do line.Visible = false end
+            local clX = math.min(Tuning.CornerLength, boxW * 0.3)
+            local clY = math.min(Tuning.CornerLength, boxH * 0.2)
+            esp.Corners[1].Position = UDim2.new(0, left, 0, top)
+            esp.Corners[1].Size = UDim2.new(0, clX, 0, 1)
+            esp.Corners[2].Position = UDim2.new(0, left, 0, top)
+            esp.Corners[2].Size = UDim2.new(0, 1, 0, clY)
+            esp.Corners[3].Position = UDim2.new(0, right - clX, 0, top)
+            esp.Corners[3].Size = UDim2.new(0, clX, 0, 1)
+            esp.Corners[4].Position = UDim2.new(0, right - 1, 0, top)
+            esp.Corners[4].Size = UDim2.new(0, 1, 0, clY)
+            esp.Corners[5].Position = UDim2.new(0, left, 0, bottom - 1)
+            esp.Corners[5].Size = UDim2.new(0, clX, 0, 1)
+            esp.Corners[6].Position = UDim2.new(0, left, 0, bottom - clY)
+            esp.Corners[6].Size = UDim2.new(0, 1, 0, clY)
+            esp.Corners[7].Position = UDim2.new(0, right - clX, 0, bottom - 1)
+            esp.Corners[7].Size = UDim2.new(0, clX, 0, 1)
+            esp.Corners[8].Position = UDim2.new(0, right - 1, 0, bottom - clY)
+            esp.Corners[8].Size = UDim2.new(0, 1, 0, clY)
+            for _, c in ipairs(esp.Corners) do c.BackgroundColor3 = color; c.Visible = true end
+        end
+    else
+        for _, line in ipairs(esp.BoxLines) do line.Visible = false end
+        for _, c in ipairs(esp.Corners) do c.Visible = false end
+    end
+    
+    if Config.ESP_Name and Config.ESP_TeamCheck then
+        esp.Name.Text = GetPlayerStatus(model)
+        esp.Name.Position = UDim2.new(0, cx - 75, 0, top - Tuning.NameOffset)
+        esp.Name.TextColor3 = color
+        esp.Name.Visible = true
+    else
+        esp.Name.Visible = false
+    end
+    
+    if Config.ESP_Distance then
+        esp.Dist.Text = math.floor(dist) .. "m"
+        esp.Dist.Position = UDim2.new(0, cx - 50, 0, bottom + Tuning.DistOffset)
+        esp.Dist.Visible = true
+    else
+        esp.Dist.Visible = false
+    end
+    
+    if Config.ESP_Tracer then
+        local originY = Config.ESP_TracerOrigin == 1 and screenSize.Y or (Config.ESP_TracerOrigin == 2 and screenCenter.Y or 0)
+        DrawLine(esp.Tracer, screenCenter.X, originY, cx, bottom, Palette.Tracer, 1)
+    else
+        esp.Tracer.Visible = false
+    end
+end
+
+function ESP.Step(cam, screenSize, screenCenter)
+    if not Config.ESP_Enabled then ESP.HideAll(); return end
+    
+    ESP.Cleanup()
+    
+    for model in pairs(Cache.Soldiers) do
+        if not IsValidModel(model) then
+            if ESP.cache[model] then ESP.Hide(ESP.cache[model]) end
+        elseif Config.ESP_TeamCheck and IsFriendly(model) then
+            if ESP.cache[model] then ESP.Hide(ESP.cache[model]) end
+        else
+            if not ESP.cache[model] then ESP.Create(model) end
+            ESP.Render(ESP.cache[model], model, cam, screenSize, screenCenter)
+        end
+    end
+end
+
+local FOVCircle = Instance.new("Frame")
+FOVCircle.BackgroundTransparency = 1
+FOVCircle.BorderSizePixel = 0
+FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVCircle.Parent = UI.ScreenGui
+local FOVStroke = Instance.new("UIStroke")
+FOVStroke.Color = Palette.FOV_Circle
+FOVStroke.Thickness = 1
+FOVStroke.Parent = FOVCircle
+Instance.new("UICorner", FOVCircle).CornerRadius = UDim.new(1, 0)
+
+local Aimbot = { aiming = false, target = nil }
+
+Connections.mb2down = Mouse.Button2Down:Connect(function() Aimbot.aiming = true; Aimbot.target = nil end)
+Connections.mb2up = Mouse.Button2Up:Connect(function() Aimbot.aiming = false; Aimbot.target = nil end)
+
+function Aimbot.GetTarget(cam, mousePos)
+    local best, bestDist = nil, Config.AIM_FOV
+    
+    for model in pairs(Cache.Soldiers) do
+        if Config.AIM_TeamCheck and IsFriendly(model) then continue end
+        if Config.ESP_TeamCheck and IsChecking(model) then continue end
+        if not IsValidModel(model) then continue end
+        
+        local part
+        if Config.AIM_TargetPart == 1 then part = GetHead(model)
+        elseif Config.AIM_TargetPart == 2 then part = GetTorso(model)
+        else part = GetRoot(model) end
+        if not part then continue end
+        
+        local sp, on = cam:WorldToViewportPoint(part.Position)
+        if not on or sp.Z <= 0 then continue end
+        
+        local sDist = (mousePos - Vector2.new(sp.X, sp.Y)).Magnitude
+        if sDist < bestDist then bestDist = sDist; best = model end
+    end
+    
+    return best
+end
+
+function Aimbot.Step(cam, screenCenter)
+    local mousePos = UserInputService:GetMouseLocation()
+    
+    FOVCircle.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
+    FOVCircle.Size = UDim2.new(0, Config.AIM_FOV * 2, 0, Config.AIM_FOV * 2)
+    FOVStroke.Color = Aimbot.aiming and Palette.FOV_Active or Palette.FOV_Circle
+    FOVCircle.Visible = Config.AIM_Enabled and Config.AIM_ShowFOV
+    
+    if not Config.AIM_Enabled or not Aimbot.aiming then return end
+    
+    local target = Aimbot.GetTarget(cam, mousePos)
+    if not target then return end
+    
+    local part
+    if Config.AIM_TargetPart == 1 then part = target:FindFirstChild("head")
+    elseif Config.AIM_TargetPart == 2 then part = target:FindFirstChild("torso")
+    else part = target:FindFirstChild("humanoid_root_part") end
+    if not part then return end
+    
+    local sp = cam:WorldToViewportPoint(part.Position)
+    local delta = Vector2.new(sp.X, sp.Y) - mousePos
+    
+    pcall(function()
+        if mousemoverel then
+            mousemoverel(delta.X * Config.AIM_Smooth, delta.Y * Config.AIM_Smooth)
+        end
+    end)
+end
+
+local Trigger = { lastShot = 0 }
+
+function Trigger.Check(cam, mousePos)
+    local myChar = LocalPlayer.Character
+    
+    for model in pairs(Cache.Soldiers) do
+        if Config.AIM_TeamCheck and IsFriendly(model) then continue end
+        if IsChecking(model) then continue end
+        if not IsValidModel(model) then continue end
+        
+        local parts = {}
+        if Config.TRIGGER_Head then table.insert(parts, "head") end
+        if Config.TRIGGER_Chest then table.insert(parts, "torso") end
+        if Config.TRIGGER_Arms then table.insert(parts, "left_arm"); table.insert(parts, "right_arm") end
+        if Config.TRIGGER_Legs then table.insert(parts, "left_leg"); table.insert(parts, "right_leg") end
+        
+        for _, pn in ipairs(parts) do
+            local p = model:FindFirstChild(pn)
+            if p then
+                local sp, on = cam:WorldToViewportPoint(p.Position)
+                if on and sp.Z > 0 and (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude < 35 then
+                    local origin = cam.CFrame.Position
+                    local direction = (p.Position - origin)
+                    local rayParams = RaycastParams.new()
+                    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                    rayParams.FilterDescendantsInstances = {myChar, model}
+                    local result = Workspace:Raycast(origin, direction, rayParams)
+                    if not result then
+                        return true
                     end
-                    break
                 end
+            end
+        end
+    end
+    return false
+end
+
+function Trigger.Shoot()
+    pcall(function() if mouse1click then mouse1click() end end)
+    pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+        task.wait(0.01)
+        vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+    end)
+end
+
+function Trigger.Step(cam)
+    if not Config.TRIGGER_Enabled then return end
+    
+    local now = tick() * 1000
+    if now - Trigger.lastShot < Config.TRIGGER_Delay then return end
+    
+    local mousePos = UserInputService:GetMouseLocation()
+    if Trigger.Check(cam, mousePos) then
+        if math.random(1, 100) <= Config.TRIGGER_HitChance then
+            Trigger.Shoot()
+            Trigger.lastShot = now
+        end
+    end
+end
+
+local GUI = {
+    Frame = nil,
+    Dragging = false,
+    DragOffset = Vector2.zero,
+    GraphLines = {},
+    GraphDots = {}
+}
+
+function GUI.CreateSmoothGraph(parent, x, y, w, h)
+    local graph = Instance.new("Frame")
+    graph.Name = "Graph"
+    graph.BackgroundColor3 = Palette.GraphBg
+    graph.BorderSizePixel = 0
+    graph.Position = UDim2.new(0, x, 0, y)
+    graph.Size = UDim2.new(0, w, 0, h)
+    graph.Parent = parent
+    Instance.new("UICorner", graph).CornerRadius = UDim.new(0, 4)
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Palette.MenuBorder
+    stroke.Thickness = 1
+    stroke.Parent = graph
+    
+    for i = 1, 4 do
+        local gridH = Instance.new("Frame")
+        gridH.BackgroundColor3 = Palette.GraphGrid
+        gridH.BorderSizePixel = 0
+        gridH.Position = UDim2.new(0, 0, i/5, 0)
+        gridH.Size = UDim2.new(1, 0, 0, 1)
+        gridH.Parent = graph
+    end
+    
+    for i = 1, 4 do
+        local gridV = Instance.new("Frame")
+        gridV.BackgroundColor3 = Palette.GraphGrid
+        gridV.BorderSizePixel = 0
+        gridV.Position = UDim2.new(i/5, 0, 0, 0)
+        gridV.Size = UDim2.new(0, 1, 1, 0)
+        gridV.Parent = graph
+    end
+    
+    GUI.GraphLines = {}
+    GUI.GraphDots = {}
+    
+    for i = 1, 20 do
+        local line = Instance.new("Frame")
+        line.Name = "Line" .. i
+        line.BackgroundColor3 = Palette.GraphLine
+        line.BorderSizePixel = 0
+        line.AnchorPoint = Vector2.new(0.5, 0.5)
+        line.Parent = graph
+        GUI.GraphLines[i] = line
+    end
+    
+    for i = 0, 20 do
+        local dot = Instance.new("Frame")
+        dot.Name = "Dot" .. i
+        dot.BackgroundColor3 = Palette.GraphLine
+        dot.BorderSizePixel = 0
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.Size = UDim2.new(0, 4, 0, 4)
+        dot.Parent = graph
+        Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+        GUI.GraphDots[i] = dot
+    end
+    
+    return graph
+end
+
+function GUI.UpdateGraph(graphFrame)
+    if not graphFrame then return end
+    
+    local w = graphFrame.AbsoluteSize.X
+    local h = graphFrame.AbsoluteSize.Y
+    if w < 10 or h < 10 then return end
+    
+    local smooth = Config.AIM_Smooth
+    local points = {}
+    
+    for i = 0, 20 do
+        local x = i / 20
+        local y = 1 - math.pow(x, 1 / math.max(smooth * 5, 0.1))
+        y = math.clamp(y, 0, 1)
+        points[i] = {x = x * w, y = y * (h - 8) + 4}
+    end
+    
+    for i, dot in pairs(GUI.GraphDots) do
+        if points[i] then
+            dot.Position = UDim2.new(0, points[i].x, 0, points[i].y)
+            dot.Visible = true
+        end
+    end
+    
+    for i = 1, 20 do
+        local line = GUI.GraphLines[i]
+        local p1 = points[i - 1]
+        local p2 = points[i]
+        if p1 and p2 then
+            local dx = p2.x - p1.x
+            local dy = p2.y - p1.y
+            local length = math.sqrt(dx * dx + dy * dy)
+            local angle = math.deg(math.atan2(dy, dx))
+            local cx = (p1.x + p2.x) / 2
+            local cy = (p1.y + p2.y) / 2
+            
+            line.Position = UDim2.new(0, cx, 0, cy)
+            line.Size = UDim2.new(0, length + 1, 0, 2)
+            line.Rotation = angle
+            line.Visible = true
+        end
+    end
+end
+
+function GUI.CreateToggle(parent, text, key, x, y)
+    local frame = Instance.new("Frame")
+    frame.BackgroundTransparency = 1
+    frame.Position = UDim2.new(0, x, 0, y)
+    frame.Size = UDim2.new(1, -x - 8, 0, 18)
+    frame.Parent = parent
+    
+    local check = Instance.new("Frame")
+    check.Name = "Check"
+    check.BackgroundColor3 = Config[key] and Palette.MenuOn or Palette.MenuOff
+    check.BorderSizePixel = 0
+    check.Position = UDim2.new(0, 0, 0.5, -6)
+    check.Size = UDim2.new(0, 12, 0, 12)
+    check.Parent = frame
+    Instance.new("UICorner", check).CornerRadius = UDim.new(0, 2)
+    
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Position = UDim2.new(0, 18, 0, 0)
+    lbl.Size = UDim2.new(1, -18, 1, 0)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextColor3 = Palette.MenuText
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = text
+    lbl.Parent = frame
+    
+    local btn = Instance.new("TextButton")
+    btn.BackgroundTransparency = 1
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.Text = ""
+    btn.Parent = frame
+    
+    btn.MouseButton1Click:Connect(function()
+        Config[key] = not Config[key]
+        check.BackgroundColor3 = Config[key] and Palette.MenuOn or Palette.MenuOff
+    end)
+    
+    return frame
+end
+
+function GUI.CreateSlider(parent, text, key, min, max, step, x, y, w)
+    local frame = Instance.new("Frame")
+    frame.BackgroundTransparency = 1
+    frame.Position = UDim2.new(0, x, 0, y)
+    frame.Size = UDim2.new(0, w, 0, 32)
+    frame.Parent = parent
+    
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(1, 0, 0, 14)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 10
+    lbl.TextColor3 = Palette.MenuTextDim
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = text
+    lbl.Parent = frame
+    
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Name = "Value"
+    valLbl.BackgroundTransparency = 1
+    valLbl.Position = UDim2.new(1, -40, 0, 0)
+    valLbl.Size = UDim2.new(0, 40, 0, 14)
+    valLbl.Font = Enum.Font.RobotoMono
+    valLbl.TextSize = 10
+    valLbl.TextColor3 = Palette.MenuText
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.Text = step < 1 and string.format("%.2f", Config[key]) or tostring(math.floor(Config[key]))
+    valLbl.Parent = frame
+    
+    local track = Instance.new("Frame")
+    track.Name = "Track"
+    track.BackgroundColor3 = Palette.MenuOff
+    track.BorderSizePixel = 0
+    track.Position = UDim2.new(0, 0, 0, 18)
+    track.Size = UDim2.new(1, 0, 0, 8)
+    track.Parent = frame
+    Instance.new("UICorner", track).CornerRadius = UDim.new(0, 4)
+    
+    local pct = (Config[key] - min) / (max - min)
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.BackgroundColor3 = Palette.MenuAccent
+    fill.BorderSizePixel = 0
+    fill.Size = UDim2.new(pct, 0, 1, 0)
+    fill.Parent = track
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 4)
+    
+    local dragging = false
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
+    end)
+    track.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+    
+    Connections["slider_" .. key] = RunService.RenderStepped:Connect(function()
+        if dragging then
+            local mx = UserInputService:GetMouseLocation().X
+            local tx = track.AbsolutePosition.X
+            local tw = track.AbsoluteSize.X
+            local p = math.clamp((mx - tx) / tw, 0, 1)
+            local v = min + p * (max - min)
+            v = math.floor(v / step + 0.5) * step
+            Config[key] = math.clamp(v, min, max)
+            fill.Size = UDim2.new((Config[key] - min) / (max - min), 0, 1, 0)
+            valLbl.Text = step < 1 and string.format("%.2f", Config[key]) or tostring(math.floor(Config[key]))
+            
+            if key == "AIM_Smooth" and GUI.GraphFrame then
+                GUI.UpdateGraph(GUI.GraphFrame)
             end
         end
     end)
     
-    local function v20(v31, v32, v33)
-        if v33 then
-            local v88 = 0
-            local v89
-            while true do
-                if (v88 == 0) then
-                    v89 = (v31 / ((3 - 1) ^ (v32 - (878 - (282 + 595))))) % 
-                          (((1641 - (1523 + 114)) - 2) ^ 
-                          (((v33 - (620 - (555 + 64))) - (v32 - 1)) + 
-                          ((838 + 94) - ((1221 - 364) + 74))))
-                    return v89 - (v89 % 1)
-                end
-            end
-        else
-            local v90 = 2 ^ (v32 - (569 - (367 + 201)))
-            return (((v31 % (v90 + v90)) >= v90) and (928 - (214 + 713))) or (0 + 0)
-        end
-    end
-    
-    local function v21()
-        local v34 = v1(v16, v18, v18)
-        v18 = v18 + 1
-        return v34
-    end
-    
-    local function v22()
-        local v35 = 1065 - (68 + 997)
-        local v36, v37
-        while true do
-            if (v35 == (1271 - (226 + 1044))) then
-                return (v37 * 256) + v36
-            end
-            if (v35 == 0) then
-                v36, v37 = v1(v16, v18, v18 + (119 - (32 + (1042 - (892 + 65)))))
-                v18 = v18 + 2
-                v35 = 1
-            end
-        end
-    end
-    
-    local function v23()
-        local v38, v39, v40, v41 = v1(v16, v18, v18 + (7 - 4))
-        v18 = v18 + 4
-        return (v41 * 16777216) + (v40 * (121138 - 55602)) + (v39 * (469 - 213)) + v38
-    end
-    
-    local function v24()
-        local v42 = v23()
-        local v43 = v23()
-        local v44 = 351 - (72 + 15 + 263)
-        local v45 = (v20(v43, 1, 200 - (67 + 113)) * 
-                    (((774 - (201 + 571)) + (1138 - (116 + 1022))) ^ (78 - 46))) + v42
-        local v46 = v20(v43, 37 - 16, 31 + 0)
-        local v47 = ((v20(v43, 24 + 8) == (3 - (8 - 6))) and -(3 - 2)) or (953 - (802 + 150))
-        
-        if (v46 == 0) then
-            if (v45 == 0) then
-                return v47 * 0
-            else
-                v46 = 1
-                v44 = 0
-            end
-        elseif (v46 == (3044 - (915 + 82))) then
-            return ((v45 == 0) and (v47 * ((1 + 0) / ((5276 - 3790) - (998 + 488))))) or (v47 * NaN)
-        end
-        return v8(v47, v46 - (1344 - 321)) * (v44 + (v45 / (2 ^ (1239 - ((1928 - (814 + 45)) + 118)))))
-    end
-    
-    local function v25(v48)
-        local v49 = 0
-        local v50, v51
-        while true do
-            if (v49 == 1) then
-                v50 = v3(v16, v18, (v18 + v48) - 1)
-                v18 = v18 + v48
-                v49 = 2
-            end
-            if (v49 == (888 - (261 + (2371 - (760 + 987))))) then
-                return v6(v51)
-            end
-            if (v49 == (3 - 1)) then
-                v51 = {}
-                for v111 = 1081 - (1020 + 60), #v50 do
-                    v51[v111] = v2(v1(v3(v50, v111, v111)))
-                end
-                v49 = 1426 - (630 + 793)
-            end
-            if (v49 == ((1913 - (1789 + 124)) - 0)) then
-                v50 = nil
-                if not v48 then
-                    v48 = v23()
-                    if (v48 == 0) then
-                        return ""
-                    end
-                end
-                v49 = 1 + (766 - (745 + 21))
-            end
-        end
-    end
-    
-    local v26 = v23
-    
-    local function v27(...)
-        return {...}, v12("#", ...)
-    end
-    
-    local function v28()
-        local v52 = (function()
-            return function(v91, v92, v93, v94, v95, v96, v97, v98)
-                local v91 = (function() 
-                    return 0 
-                end)()
-                local v92 = (function() 
-                    return 
-                end)()
-                local v93 = (function() 
-                    return 
-                end)()
-                
-                while true do
-                    if (#"," == v91) then
-                        if (v92 == #"\\") then
-                            v93 = (function() 
-                                return v94() ~= (1262 - (1091 + 171)) 
-                            end)()
-                        elseif (v92 == 2) then
-                            v93 = (function() 
-                                return v95() 
-                            end)()
-                        elseif (v92 == #"-19") then
-                            v93 = (function() 
-                                return v96() 
-                            end)()
-                        end
-                        v97[v98] = (function() 
-                            return v93 
-                        end)()
-                        break
-                    end
-                    
-                    if (v91 == 0) then
-                        local v118 = (function() 
-                            return 0 
-                        end)()
-                        local v119 = (function() 
-                            return 
-                        end)()
-                        
-                        while true do
-                            if (0 ~= v118) then
-                                -- do nothing
-                            else
-                                v119 = (function() 
-                                    return 0 
-                                end)()
-                                while true do
-                                    if (v119 == 0) then
-                                        v92 = (function() 
-                                            return v94() 
-                                        end)()
-                                        v93 = (function() 
-                                            return nil 
-                                        end)()
-                                        v119 = (function() 
-                                            return 1 
-                                        end)()
-                                    end
-                                    if (1 ~= v119) then
-                                        -- do nothing
-                                    else
-                                        v91 = (function() 
-                                            return #"]" 
-                                        end)()
-                                        break
-                                    end
-                                end
-                                break
-                            end
-                        end
-                    end
-                end
-                return v91, v92, v93, v94, v95, v96, v97, v98
-            end
-        end)()
-        
-        local v53 = (function()
-            return function(v99, v100, v101)
-                local v102 = (function() 
-                    return 0 
-                end)()
-                local v103 = (function() 
-                    return 
-                end)()
-                
-                while true do
-                    if (v102 == (374 - (123 + 251))) then
-                        v103 = (function() 
-                            return 0 
-                        end)()
-                        while true do
-                            if (0 ~= v103) then
-                                -- do nothing
-                            else
-                                v99[v100 - #"<"] = (function() 
-                                    return v101() 
-                                end)()
-                                return v99, v100, v101
-                            end
-                        end
-                        break
-                    end
-                end
-            end
-        end)()
-        
-        local v54 = (function() 
-            return {} 
-        end)()
-        local v55 = (function() 
-            return {} 
-        end)()
-        local v56 = (function() 
-            return {} 
-        end)()
-        local v57 = (function() 
-            return { v54, v55, nil, v56 } 
-        end)()
-        local v58 = (function() 
-            return v23() 
-        end)()
-        local v59 = (function() 
-            return {} 
-        end)()
-        
-        for v67 = #"/", v58 do
-            FlatIdent_7F35E, Type, Cons, v21, v24, v25, v59, v67 = 
-                (function() 
-                    return v52(FlatIdent_7F35E, Type, Cons, v21, v24, v25, v59, v67) 
-                end)()
-        end
-        
-        v57[#"91("] = (function() 
-            return v21() 
-        end)()
-        
-        for v68 = #"<", v23() do
-            local v69 = (function() 
-                return v21() 
-            end)()
-            
-            if (v20(v69, #"|", #" ") == (698 - (208 + 490))) then
-                local v107 = (function() 
-                    return 0 
-                end)()
-                local v108, v109, v110
-                
-                while true do
-                    if (v107 == 1) then
-                        v110 = (function() 
-                            return { v22(), v22(), nil, nil } 
-                        end)()
-                        
-                        if (v108 == 0) then
-                            local v126 = (function() 
-                                return 0 
-                            end)()
-                            local v127 = (function() 
-                                return 
-                            end)()
-                            
-                            while true do
-                                if (v126 == (202 - (14 + 188))) then
-                                    v127 = (function() 
-                                        return 675 - (534 + 141) 
-                                    end)()
-                                    while true do
-                                        if (v127 ~= 0) then
-                                            -- do nothing
-                                        else
-                                            v110[#"91("] = (function() 
-                                                return v22() 
-                                            end)()
-                                            v110[#"0836"] = (function() 
-                                                return v22() 
-                                            end)()
-                                            break
-                                        end
-                                    end
-                                    break
-                                end
-                            end
-                        elseif (v108 == #"{") then
-                            v110[#"xxx"] = (function() 
-                                return v23() 
-                            end)()
-                        elseif (v108 == 2) then
-                            v110[#"nil"] = (function() 
-                                return v23() - ((2 + 0) ^ (16 + 0)) 
-                            end)()
-                        elseif (v108 ~= #"-19") then
-                            -- do nothing
-                        else
-                            local v135 = (function() 
-                                return 0 
-                            end)()
-                            local v136 = (function() 
-                                return 
-                            end)()
-                            
-                            while true do
-                                if ((0 - 0) == v135) then
-                                    v136 = (function() 
-                                        return 0 
-                                    end)()
-                                    while true do
-                                        if (v136 == 0) then
-                                            v110[#"xnx"] = (function() 
-                                                return v23() - (2 ^ (44 - 28)) 
-                                            end)()
-                                            v110[#".dev"] = (function() 
-                                                return v22() 
-                                            end)()
-                                            break
-                                        end
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                        
-                        v107 = (function() 
-                            return 2 
-                        end)()
-                    end
-                    
-                    if (v107 ~= 2) then
-                        -- do nothing
-                    else
-                        if (v20(v109, #" ", #":") == #"[") then
-                            v110[2] = (function() 
-                                return v59[v110[2]] 
-                            end)()
-                        end
-                        if (v20(v109, 2, 398 - (115 + 281)) == #"~") then
-                            v110[#"19("] = (function() 
-                                return v59[v110[#"asd"]] 
-                            end)()
-                        end
-                        v107 = (function() 
-                            return 6 - 3 
-                        end)()
-                    end
-                    
-                    if (v107 == 3) then
-                        if (v20(v109, #"asd", #"19(") ~= #"/") then
-                            -- do nothing
-                        else
-                            v110[#"0313"] = (function() 
-                                return v59[v110[#"0313"]] 
-                            end)()
-                        end
-                        v54[v68] = (function() 
-                            return v110 
-                        end)()
-                        break
-                    end
-                    
-                    if (v107 == 0) then
-                        local v121 = (function() 
-                            return 0 
-                        end)()
-                        local v122 = (function() 
-                            return 
-                        end)()
-                        
-                        while true do
-                            if ((0 - 0) ~= v121) then
-                                -- do nothing
-                            else
-                                v122 = (function() 
-                                    return 0 
-                                end)()
-                                while true do
-                                    if (v122 == 1) then
-                                        v107 = (function() 
-                                            return 1 
-                                        end)()
-                                        break
-                                    end
-                                    if (v122 ~= 0) then
-                                        -- do nothing
-                                    else
-                                        v108 = (function() 
-                                            return v20(v69, 7 - 5, #"gha") 
-                                        end)()
-                                        v109 = (function() 
-                                            return v20(v69, #"http", 873 - (550 + 317)) 
-                                        end)()
-                                        v122 = (function() 
-                                            return 1 
-                                        end)()
-                                    end
-                                end
-                                break
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        
-        for v70 = #":", v23() do
-            v55, v70, v28 = (function() 
-                return v53(v55, v70, v28) 
-            end)()
-        end
-        
-        return v57
-    end
-    
-    local function v29(v61, v62, v63)
-        local v64 = v61[1]
-        local v65 = v61[2]
-        local v66 = v61[3]
-        
-        return function(...)
-            local v71 = v64
-            local v72 = v65
-            local v73 = v66
-            local v74 = v27
-            local v75 = 1
-            local v76 = -1
-            local v77 = {}
-            local v78 = { ... }
-            local v79 = v12("#", ...) - (286 - (134 + 151))
-            local v80 = {}
-            local v81 = {}
-            
-            for v104 = 1665 - (970 + 695), v79 do
-                if ((v104 >= v73) or (3285 <= 764)) then
-                    v77[v104 - v73] = v78[v104 + 1]
-                else
-                    v81[v104] = v78[v104 + (1991 - (582 + 1408))]
-                end
-            end
-            
-            local v82 = (v79 - v73) + (3 - 2)
-            local v83, v84
-            
-            while true do
-                v83 = v71[v75]
-                v84 = v83[1]
-                
-                if ((2499 == 2499) and (v84 <= (47 - 9))) then
-                    if (v84 <= (9 + 9)) then
-                        if (v84 <= (30 - 22)) then
-                            if (v84 <= ((1378 + 449) - (1195 + 629))) then
-                                if (v84 <= ((2 - 1) - 0)) then
-                                    if (v84 > ((929 - (364 + 324)) - (187 + 54))) then
-                                        local v137 = v83[782 - (162 + 618)]
-                                        v81[v137] = v81[v137]()
-                                    else
-                                        v81[v83[1996 - (109 + 1885)]] = v63[v83[3]]
-                                    end
-                                elseif (v84 > (5 - 3)) then
-                                    local v141 = 0
-                                    local v142, v143, v144
-                                    while true do
-                                        if ((v141 == ((2 - 1) + 0)) or (692 >= 4933)) then
-                                            v144 = 0
-                                            for v323 = v142, v83[6 - 2] do
-                                                local v324 = 0
-                                                while true do
-                                                    if ((v324 == (1636 - (1373 + 263))) or (3154 <= 2260)) then
-                                                        v144 = v144 + (1001 - (451 + 549))
-                                                        v81[v323] = v143[v144]
-                                                        break
-                                                    end
-                                                end
-                                            end
-                                            break
-                                        end
-                                        if (v141 == 0) then
-                                            v142 = v83[2]
-                                            v143 = { v81[v142](v81[v142 + 1]) }
-                                            v141 = 1385 - (746 + 638)
-                                        end
-                                    end
-                                else
-                                    local v145 = 0
-                                    local v146, v147, v148
-                                    while true do
-                                        if (v145 == 2) then
-                                            if (v147 > (341 - (218 + 123))) then
-                                                if (v148 <= v81[v146 + ((525 + 1057) - (1535 + 46))]) then
-                                                    local v385 = 0
-                                                    while true do
-                                                        if ((0 + 0) == v385) then
-                                                            v75 = v83[563 - (306 + 254)]
-                                                            v81[v146 + 1 + 2] = v148
-                                                            break
-                                                        end
-                                                    end
-                                                end
-                                            elseif (v148 >= v81[v146 + (4 - 3)]) then
-                                                v75 = v83[5 - 2]
-                                                v81[v146 + ((2354 - 884) - (899 + 568))] = v148
-                                            end
-                                            break
-                                        end
-                                        if (v145 == 0) then
-                                            v146 = v83[9 - 7]
-                                            v147 = v81[v146 + (4 - 2)]
-                                            v145 = (1834 - 1230) - (268 + 335)
-                                        end
-                                        if (v145 == ((1269 - (1249 + 19)) + 0)) then
-                                            v148 = v81[v146] + v147
-                                            v81[v146] = v148
-                                            v145 = 292 - (60 + 230)
-                                        end
-                                    end
-                                end
-                            elseif ((v84 <= (5 + 0)) or (2637 > 3149)) then
-                                if (v84 == (576 - (426 + 146))) then
-                                    local v149 = v83[2]
-                                    v81[v149] = v81[v149](v81[v149 + 1])
-                                else
-                                    v81[v83[2]] = v81[v83[1459 - (282 + 1174)]] * v81[v83[1280 - (316 + 960)]]
-                                end
-                            elseif (v84 <= (817 - (569 + 242))) then
-                                v81[v83[5 - 3]] = v62[v83[1 + 2]]
-                            elseif (v84 > (7 + 0)) then
-                                if (v81[v83[1026 - (706 + 318)]] == v83[1255 - (721 + 479 + 51)]) then
-                                    v75 = v75 + ((4951 - 3679) - (945 + 326))
-                                else
-                                    v75 = v83[7 - 4]
-                                end
-                            else
-                                local v238 = v83[2]
-                                local v239 = v81[v238]
-                                for v299 = v238 + (701 - (271 + 429)), v76 do
-                                    v7(v239, v81[v299])
-                                end
-                            end
-                        elseif (v84 <= (12 + 1)) then
-                            if ((v84 <= (1510 - (1408 + 92))) or (3992 < 2407)) then
-                                if (v84 == (1095 - ((1547 - (686 + 400)) + 625))) then
-                                    local v154 = 0
-                                    local v155, v156, v157
-                                    while true do
-                                        if ((v154 == (1289 - (993 + 295))) or (2902 > 4859)) then
-                                            v157 = {}
-                                            v156 = v10({}, {
-                                                __index = function(v326, v327)
-                                                    local v328 = 0
-                                                    local v329
-                                                    while true do
-                                                        if ((1679 < 4359) and (v328 == 0)) then
-                                                            v329 = v157[v327]
-                                                            return v329[1172 - (418 + 753)][v329[3 - 1]]
-                                                        end
-                                                    end
-                                                end,
-                                                __newindex = function(v330, v331, v332)
-                                                    local v333 = 0
-                                                    local v334
-                                                    while true do
-                                                        if (v333 == 0) then
-                                                            v334 = v157[v331]
-                                                            v334[1773 - (1733 + 39)][v334[2]] = v332
-                                                            break
-                                                        end
-                                                    end
-                                                end
-                                            })
-                                            v154 = 1 + 1
-                                        end
-                                        if ((1913 < 4670) and ((1034 - (99 + 26 + 909)) == v154)) then
-                                            v155 = v72[v83[1 + 2]]
-                                            v156 = nil
-                                            v154 = 530 - (406 + 123)
-                                        end
-                                        if (v154 == ((2000 - (73 + 156)) - (1749 + 20))) then
-                                            for v335 = 1, v83[4] do
-                                                local v336 = 0
-                                                local v337
-                                                while true do
-                                                    if (v336 == (1323 - (6 + 1243 + 73))) then
-                                                        if (v337[1] == (1162 - (466 + 679))) then
-                                                            v157[v335 - (96 - (51 + 44))] = { v81, v337[8 - 5] }
-                                                        else
-                                                            v157[v335 - (1901 - (106 + 1794))] = { v62, v337[1 + 2] }
-                                                        end
-                                                        v80[#v80 + (2 - (1 + 0))] = v157
-                                                        break
-                                                    end
-                                                    if (v336 == 0) then
-                                                        v75 = v75 + (2 - 1)
-                                                        v337 = v71[v75]
-                                                        v336 = (373 - 258) - (4 + (580 - (224 + 246)))
-                                                    end
-                                                end
-                                            end
-                                            v81[v83[586 - (57 + 527)]] = v29(v155, v156, v63)
-                                            break
-                                        end
-                                    end
-                                else
-                                    local v158 = v83[1429 - (41 + 1386)]
-                                    local v159 = v83[4]
-                                    local v160 = v158 + (105 - (17 + 86))
-                                    local v161 = { v81[v158](v81[v158 + 1], v81[v160]) }
-                                    for v228 = 2 - 1, v159 do
-                                        v81[v160 + v228] = v161[v228]
-                                    end
-                                    local v162 = v161[2 - 1]
-                                    if (v162 or (2846 < 879)) then
-                                        v81[v160] = v162
-                                        v75 = v83[3]
-                                    else
-                                        v75 = v75 + (167 - (122 + 44))
-                                    end
-                                end
-                            elseif ((4588 == 4588) and (v84 <= (18 - (11 - 4)))) then
-                                v81[v83[6 - 4]] = {}
-                            elseif (v84 > (10 + 2)) then
-                                local v242 = 0
-                                local v243, v244, v245, v246
-                                while true do
-                                    if (v242 == (3 - 1)) then
-                                        for v361 = v243, v76 do
-                                            v246 = v246 + 1
-                                            v81[v361] = v244[v246]
-                                        end
-                                        break
-                                    end
-                                    if (v242 == 1) then
-                                        v76 = (v245 + v243) - (1249 - (111 + 1137))
-                                        v246 = 158 - (91 + 67)
-                                        v242 = (1 + 4) - 3
-                                    end
-                                    if (v242 == 0) then
-                                        v243 = v83[1 + 1]
-                                        v244, v245 = v74(v81[v243](v81[v243 + (66 - (30 + 26 + 9))]))
-                                        v242 = 1
-                                    end
-                                end
-                            else
-                                v81[v83[1259 - (1043 + 214)]] = v81[v83[11 - 8]] + v83[1216 - (323 + 889)]
-                            end
-                        elseif (v84 <= (40 - (49 - 24))) then
-                            if ((v84 == (594 - (361 + 219))) or (347 == 2065)) then
-                                local v164 = v83[8 - 6]
-                                local v165 = v81[v164 + (322 - (53 + (888 - 621)))]
-                                local v166 = v81[v164] + v165
-                                v81[v164] = v166
-                                if (v165 > 0) then
-                                    if (v166 <= v81[v164 + 1]) then
-                                        v75 = v83[1 + 2]
-                                        v81[v164 + (416 - ((528 - (203 + 310)) + 398))] = v166
-                                    end
-                                elseif (v166 >= v81[v164 + (33 - (19 + 13))]) then
-                                    v75 = v83[985 - (18 + 964)]
-                                    v81[v164 + (6 - 3)] = v166
-                                end
-                            else
-                                v81[v83[7 - (1998 - (1238 + 755))]] = v81[v83[2 + 1]] + v83[3 + 1]
-                            end
-                        elseif ((v84 <= (866 - (20 + 830))) or (1311 > 2697)) then
-                            v75 = v83[3]
-                        elseif (v84 == (143 - ((1650 - (709 + 825)) + 10))) then
-                            v81[v83[1 + 1]] = v81[v83[741 - (542 + 196)]]
-                        else
-                            local v250 = 0
-                            local v251, v252
-                            while true do
-                                if ((v250 == 0) or (2717 > 3795)) then
-                                    v251 = v83[1 + 1]
-                                    v252 = {}
-                                    v250 = 1
-                                end
-                                if ((v250 == 1) or (1081 < 391)) then
-                                    for v364 = 2 - 1, #v80 do
-                                        local v365 = v80[v364]
-                                        for v393 = 0, #v365 do
-                                            local v394 = 1551 - (1126 + 425)
-                                            local v395, v396, v397
-                                            while true do
-                                                if (v394 == 1) then
-                                                    v397 = v395[407 - (118 + 287)]
-                                                    if ((v396 == v81) and (v397 >= v251)) then
-                                                        v252[v397] = v396[v397]
-                                                        v395[3 - 2] = v252
-                                                    end
-                                                    break
-                                                end
-                                                if (0 == v394) then
-                                                    v395 = v365[v393]
-                                                    v396 = v395[1122 - (118 + 1003)]
-                                                    v394 = 2 - 1
-                                                end
-                                            end
-                                        end
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Continue with the rest of the conditions...
-                    -- (The code continues with many more conditions but has been truncated for brevity)
-                    
-                end
-                
-                v75 = v75 + (1785 - (214 + 1570))
-            end
-        end
-    end
-    
-    return v29(v28(), {}, v17)(...)
+    return frame
 end
 
+function GUI.CreateDropdown(parent, text, key, options, x, y, w)
+    local frame = Instance.new("Frame")
+    frame.BackgroundTransparency = 1
+    frame.Position = UDim2.new(0, x, 0, y)
+    frame.Size = UDim2.new(0, w, 0, 18)
+    frame.Parent = parent
+    
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(0.5, 0, 1, 0)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 10
+    lbl.TextColor3 = Palette.MenuTextDim
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = text
+    lbl.Parent = frame
+    
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Name = "Value"
+    valLbl.BackgroundTransparency = 1
+    valLbl.Position = UDim2.new(0.5, 0, 0, 0)
+    valLbl.Size = UDim2.new(0.5, 0, 1, 0)
+    valLbl.Font = Enum.Font.Gotham
+    valLbl.TextSize = 10
+    valLbl.TextColor3 = Palette.MenuAccent
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.Text = options[Config[key]] or "?"
+    valLbl.Parent = frame
+    
+    local btn = Instance.new("TextButton")
+    btn.BackgroundTransparency = 1
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.Text = ""
+    btn.Parent = frame
+    
+    btn.MouseButton1Click:Connect(function()
+        Config[key] = Config[key] % #options + 1
+        valLbl.Text = options[Config[key]] or "?"
+    end)
+    
+    return frame
+end
+
+function GUI.CreatePanel(parent, title, x, y, w, h)
+    local panel = Instance.new("Frame")
+    panel.Name = title
+    panel.BackgroundColor3 = Palette.MenuPanel
+    panel.BorderSizePixel = 0
+    panel.Position = UDim2.new(0, x, 0, y)
+    panel.Size = UDim2.new(0, w, 0, h)
+    panel.Parent = parent
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 4)
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Palette.MenuBorder
+    stroke.Thickness = 1
+    stroke.Parent = panel
+    
+    local header = Instance.new("TextLabel")
+    header.BackgroundTransparency = 1
+    header.Position = UDim2.new(0, 10, 0, 6)
+    header.Size = UDim2.new(1, -20, 0, 16)
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 11
+    header.TextColor3 = Palette.MenuHeader
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Text = title
+    header.Parent = panel
+    
+    return panel
+end
+
+function GUI.Create()
+    local menuW, menuH = 540, 320
+    
+    local main = Instance.new("Frame")
+    main.Name = "Menu"
+    main.BackgroundColor3 = Palette.MenuBg
+    main.BorderSizePixel = 0
+    main.Size = UDim2.new(0, menuW, 0, menuH)
+    main.Position = UDim2.new(0.5, -menuW/2, 0.5, -menuH/2)
+    main.Active = true
+    main.Parent = UI.ScreenGui
+    GUI.Frame = main
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 6)
+    
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Color = Palette.MenuBorder
+    mainStroke.Thickness = 1
+    mainStroke.Parent = main
+    
+    local header = Instance.new("Frame")
+    header.Name = "Header"
+    header.BackgroundColor3 = Palette.MenuPanel
+    header.BorderSizePixel = 0
+    header.Size = UDim2.new(1, 0, 0, 28)
+    header.Parent = main
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 6)
+    
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 12, 0, 0)
+    title.Size = UDim2.new(0, 100, 1, 0)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 14
+    title.TextColor3 = Palette.MenuAccent
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Text = "DEADLINE"
+    title.Parent = header
+    
+    local subtitle = Instance.new("TextLabel")
+    subtitle.BackgroundTransparency = 1
+    subtitle.Position = UDim2.new(0, 95, 0, 0)
+    subtitle.Size = UDim2.new(0, 60, 1, 0)
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextSize = 10
+    subtitle.TextColor3 = Palette.MenuTextDim
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.Text = "by leet"
+    subtitle.Parent = header
+    
+    local xenoTag = Instance.new("TextLabel")
+    xenoTag.BackgroundTransparency = 1
+    xenoTag.Position = UDim2.new(1, -120, 0, 0)
+    xenoTag.Size = UDim2.new(0, 50, 1, 0)
+    xenoTag.Font = Enum.Font.GothamBold
+    xenoTag.TextSize = 10
+    xenoTag.TextColor3 = Color3.fromRGB(80, 255, 120)
+    xenoTag.TextXAlignment = Enum.TextXAlignment.Right
+    xenoTag.Text = "XENO"
+    xenoTag.Parent = header
+    
+    local hotkey = Instance.new("TextLabel")
+    hotkey.BackgroundTransparency = 1
+    hotkey.Position = UDim2.new(1, -65, 0, 0)
+    hotkey.Size = UDim2.new(0, 55, 1, 0)
+    hotkey.Font = Enum.Font.RobotoMono
+    hotkey.TextSize = 9
+    hotkey.TextColor3 = Palette.MenuTextDim
+    hotkey.TextXAlignment = Enum.TextXAlignment.Right
+    hotkey.Text = "[INS]"
+    hotkey.Parent = header
+    
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            GUI.Dragging = true
+            local mouse = UserInputService:GetMouseLocation()
+            GUI.DragOffset = mouse - Vector2.new(main.AbsolutePosition.X, main.AbsolutePosition.Y)
+        end
+    end)
+    header.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then GUI.Dragging = false end
+    end)
+    
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.BackgroundTransparency = 1
+    content.Position = UDim2.new(0, 10, 0, 36)
+    content.Size = UDim2.new(1, -20, 1, -60)
+    content.Parent = main
+    
+    local aimPanel = GUI.CreatePanel(content, "Aimbot", 0, 0, 170, 230)
+    GUI.CreateToggle(aimPanel, "Enable", "AIM_Enabled", 10, 28)
+    GUI.CreateDropdown(aimPanel, "Target", "AIM_TargetPart", {"Head", "Torso", "Root"}, 10, 50, 150)
+    GUI.CreateSlider(aimPanel, "FOV", "AIM_FOV", 50, 400, 10, 10, 72, 150)
+    GUI.CreateSlider(aimPanel, "Smooth", "AIM_Smooth", 0.05, 0.5, 0.01, 10, 108, 150)
+    
+    GUI.GraphFrame = GUI.CreateSmoothGraph(aimPanel, 10, 148, 150, 72)
+    
+    task.defer(function()
+        task.wait(0.1)
+        GUI.UpdateGraph(GUI.GraphFrame)
+    end)
+    
+    local triggerPanel = GUI.CreatePanel(content, "Trigger", 180, 0, 170, 230)
+    GUI.CreateToggle(triggerPanel, "Enable", "TRIGGER_Enabled", 10, 28)
+    
+    local bodyFrame = Instance.new("Frame")
+    bodyFrame.BackgroundColor3 = Palette.GraphBg
+    bodyFrame.BorderSizePixel = 0
+    bodyFrame.Position = UDim2.new(0, 10, 0, 50)
+    bodyFrame.Size = UDim2.new(0, 150, 0, 70)
+    bodyFrame.Parent = triggerPanel
+    Instance.new("UICorner", bodyFrame).CornerRadius = UDim.new(0, 3)
+    Instance.new("UIStroke", bodyFrame).Color = Palette.MenuBorder
+    
+    local bodyParts = {{"Head", "TRIGGER_Head"}, {"Arms", "TRIGGER_Arms"}, {"Chest", "TRIGGER_Chest"}, {"Legs", "TRIGGER_Legs"}}
+    for i, bp in ipairs(bodyParts) do
+        local py = 4 + (i - 1) * 16
+        local check = Instance.new("Frame")
+        check.BackgroundColor3 = Config[bp[2]] and Palette.MenuOn or Palette.MenuOff
+        check.BorderSizePixel = 0
+        check.Position = UDim2.new(0, 6, 0, py + 2)
+        check.Size = UDim2.new(0, 10, 0, 10)
+        check.Parent = bodyFrame
+        Instance.new("UICorner", check).CornerRadius = UDim.new(0, 2)
+        
+        local lbl = Instance.new("TextLabel")
+        lbl.BackgroundTransparency = 1
+        lbl.Position = UDim2.new(0, 22, 0, py)
+        lbl.Size = UDim2.new(1, -26, 0, 14)
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextSize = 10
+        lbl.TextColor3 = Palette.MenuText
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = bp[1]
+        lbl.Parent = bodyFrame
+        
+        local btn = Instance.new("TextButton")
+        btn.BackgroundTransparency = 1
+        btn.Position = UDim2.new(0, 0, 0, py)
+        btn.Size = UDim2.new(1, 0, 0, 14)
+        btn.Text = ""
+        btn.Parent = bodyFrame
+        btn.MouseButton1Click:Connect(function()
+            Config[bp[2]] = not Config[bp[2]]
+            check.BackgroundColor3 = Config[bp[2]] and Palette.MenuOn or Palette.MenuOff
+        end)
+    end
+    
+    GUI.CreateSlider(triggerPanel, "Delay", "TRIGGER_Delay", 0, 200, 5, 10, 138, 150)
+    GUI.CreateSlider(triggerPanel, "Hitchance", "TRIGGER_HitChance", 1, 100, 1, 10, 172, 150)
+    
+    local espPanel = GUI.CreatePanel(content, "ESP", 360, 0, 160, 230)
+    GUI.CreateToggle(espPanel, "Enable", "ESP_Enabled", 10, 28)
+    GUI.CreateToggle(espPanel, "Box", "ESP_Box", 10, 48)
+    GUI.CreateDropdown(espPanel, "Style", "ESP_BoxStyle", {"Full", "Corner"}, 10, 68, 140)
+    GUI.CreateToggle(espPanel, "Name", "ESP_Name", 10, 88)
+    GUI.CreateToggle(espPanel, "Distance", "ESP_Distance", 10, 108)
+    GUI.CreateToggle(espPanel, "Tracer", "ESP_Tracer", 10, 128)
+    GUI.CreateToggle(espPanel, "Team Check", "ESP_TeamCheck", 10, 148)
+    GUI.CreateSlider(espPanel, "Range", "ESP_MaxDistance", 100, 2000, 50, 10, 172, 140)
+    
+    local footer = Instance.new("Frame")
+    footer.BackgroundTransparency = 1
+    footer.Position = UDim2.new(0, 0, 1, -20)
+    footer.Size = UDim2.new(1, 0, 0, 20)
+    footer.Parent = main
+    
+    local panic = Instance.new("TextLabel")
+    panic.BackgroundTransparency = 1
+    panic.Position = UDim2.new(0, 12, 0, 0)
+    panic.Size = UDim2.new(0, 100, 1, 0)
+    panic.Font = Enum.Font.RobotoMono
+    panic.TextSize = 10
+    panic.TextColor3 = Palette.MenuTextDim
+    panic.TextXAlignment = Enum.TextXAlignment.Left
+    panic.Text = "[HOME] panic"
+    panic.Parent = footer
+    
+    local credit = Instance.new("TextLabel")
+    credit.BackgroundTransparency = 1
+    credit.Position = UDim2.new(0, 12, 0, 0)
+    credit.Size = UDim2.new(1, -24, 1, 0)
+    credit.Font = Enum.Font.RobotoMono
+    credit.TextSize = 10
+    credit.TextColor3 = Palette.MenuTextDim
+    credit.TextXAlignment = Enum.TextXAlignment.Right
+    credit.Text = "xan.bar"
+    credit.Parent = footer
+end
+
+function GUI.Step()
+    if GUI.Dragging then
+        local mouse = UserInputService:GetMouseLocation()
+        local newPos = mouse - GUI.DragOffset
+        GUI.Frame.Position = UDim2.new(0, newPos.X, 0, newPos.Y)
+    end
+end
+
+local function Unload()
+    if Unloaded then return end
+    Unloaded = true
+    
+    for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections = {}
+    
+    for _, esp in pairs(ESP.cache) do ESP.Destroy(esp) end
+    ESP.cache = {}
+    
+    pcall(function() UI.ScreenGui:Destroy() end)
+end
+
+Connections.input = UserInputService.InputBegan:Connect(function(input, gp)
+    if input.KeyCode == Enum.KeyCode.Home then Unload(); return end
+    if input.KeyCode == Enum.KeyCode.Insert and not gp then
+        Config.MENU_Open = not Config.MENU_Open
+        if GUI.Frame then GUI.Frame.Visible = Config.MENU_Open end
+        return
+    end
+end)
+
+Connections.inputUp = UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then GUI.Dragging = false end
+end)
+
+Connections.render = RunService.RenderStepped:Connect(function()
+    if Unloaded then return end
+    
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local screenSize = cam.ViewportSize
+    local screenCenter = Vector2.new(screenSize.X / 2, screenSize.Y / 2)
+    local now = tick()
+    
+    local myChar = LocalPlayer.Character
+    Cache.myRoot = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("humanoid_root_part"))
+    if Cache.myRoot then
+        Cache.myPos = Cache.myRoot.Position
+    else
+        Cache.myPos = cam.CFrame.Position
+    end
+    
+    if now - Timers.lastCache > Tuning.CacheInterval then
+        Timers.lastCache = now
+        CacheSoldiers()
+    end
+    
+    if Config.ESP_TeamCheck and now - Timers.lastTeamScan > Tuning.TeamScanInterval then
+        Timers.lastTeamScan = now
+        ScanFriendlyIndicators()
+        UpdateFriendlyStatus()
+    end
+    
+    pcall(function() ESP.Step(cam, screenSize, screenCenter) end)
+    pcall(function() Aimbot.Step(cam, screenCenter) end)
+    pcall(function() Trigger.Step(cam) end)
+    pcall(GUI.Step)
+end)
+
+local function Initialize()
+    CharacterFolder = Workspace:WaitForChild("characters", 10)
+    if not CharacterFolder then return end
+    
+    GUI.Create()
+    
+    Connections.CharacterAdded = LocalPlayer.CharacterAdded:Connect(function()
+        Cache.Soldiers = {}
+        Cache.Friendlies = {}
+        Cache.FriendlyScores = {}
+        Cache.ConfirmedEnemies = {}
+        Cache.EnemyConfirmations = {}
+    end)
+end
+
+Initialize()
